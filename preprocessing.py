@@ -14,6 +14,7 @@ correct_groups_series = pd.Series(correct_groups_count, correct_groups)
 
 class Dataset:
     full_structure = None
+    structure_graph = None
     
     def __init__(self, data):
         self.data = data[['energy_per_atom', 
@@ -70,4 +71,12 @@ class Dataset:
         defect_site = d0[0]
         insert_transf = InsertSitesTransformation([site_species],
                                                   [defect_site.frac_coords])
-        return insert_transf.apply_transformation(s0)
+        self.full_structure = insert_transf.apply_transformation(s0)
+        return self.full_structure
+    
+    def get_structure_graph(self):
+        if self.structure_graph is not None:
+            return self.structure_graph
+        else:
+            self.structure_graph = make_graph(self.get_full_structure())
+            return self.structure_graph

@@ -1,6 +1,12 @@
 import numpy as np
 import nglview
 import json
+import tempfile
+import networkx as nx
+import networkx.algorithms.isomorphism as iso
+
+def get_tmp_filename():
+    return next(tempfile._get_candidate_names())
 
 from pymatgen.transformations.site_transformations import (
     ReplaceSiteSpeciesTransformation,
@@ -10,6 +16,9 @@ from pymatgen.transformations.site_transformations import (
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer, SpacegroupOperations
 from pymatgen.core.sites import PeriodicSite
 
+from pymatgen.core import Structure
+from pymatgen.analysis.graphs import StructureGraph
+from pymatgen.analysis.local_env import MinimumDistanceNN
 
 
 def get_element(defect_site):
@@ -93,16 +102,16 @@ def classify(defect_representation, layers_coords, atol=1e-02):
 
 # work with sites
 
-def sites_equal(s1, s2, atol=1e-1):
-    return np.allclose(s1.coords, s2.coords, atol)
+def sites_equal(s1, s2, atol=1.5e-1):
+    return np.allclose(s1.coords, s2.coords, atol=atol)
 
-def find_site(structure, site, atol=1e-1):
+def find_site(structure, site, atol=1.5e-1):
     for i, s in enumerate(structure):
         if sites_equal(s, site, atol):
             return i
     raise ValueError(f"{site} not found in structure with atol={atol}")
     
-def safe_find_site(sites, site, atol=1e-1):
+def safe_find_site(sites, site, atol=1.5e-1):
     for i, s in enumerate(sites):
         if sites_equal(s, site, atol):
             return True, i
@@ -112,6 +121,73 @@ def get_x_y_dist(structure, size=(8,8)):
     ls = structure.lattice.lengths
     return ls[0] / size[0], ls[1] / size[1]
 
+def convert_site(site):
+    if site.specie.symbol == "X":
+        return PeriodicSite("Au", site.frac_coords, site.lattice)
+    return site
+
+def get_r(structure, size=(8,8,3)):
+    ls = np.array(structure.lattice.lengths) / size
+    return np.sqrt(np.sum(np.square(ls))) / 2
+
+def matrices_are_isomofic(m1, m2, rtol=1e-2):
+    if m1.shape != m2.shape:
+        return False
+    G1 = nx.from_numpy_matrix(m1)
+    G2 = nx.from_numpy_matrix(m2)
+    edge_comp = iso.numerical_edge_match("weight", 0.0, rtol=rtol)
+    return nx.is_isomorphic(G1, G2, edge_match=edge_comp)
+
+def get_nn(structure, site, atol=1e-1):
+        """
+        returns indicies of neighbouring sites in structure for given site.
+        """
+        layer_coords = build_layers_coords(structure)
+        layer = get_layer(site, layer_coords)
+        nearest_neighbor_ids = []
+        dx, dy = get_x_y_dist(structure)
+        for i,s in enumerate(structure):
+            if max(np.isclose(site.distance(s), [dx, dy], atol=atol)) == 1 and get_layer(s, layer_coords) == layer:
+                nearest_neighbor_ids.append(i)    
+        return nearest_neighbor_ids
+    
+def make_graph(structure): 
+    graph = StructureGraph.with_local_env_strategy(structure, 
+                                                  MinimumDistanceNN(
+                                                      cutoff=get_r(structure), 
+                                                      get_all_sites=True),
+                                                  weights=True
+                                                  )
+    graph.set_node_attributes()
+    return graph
+
+def get_sites_of_subgraph(structure_graph, full_structure, defect_representation):
+    n = len(defect_representation)
+    sites = set([convert_site(defect) for defect in defect_representation])
+    for i in range(n):
+        d_i = find_site(full_structure, defect_representation[i])
+        for j in range(i+1, n, 1):
+            d_j = find_site(full_structure, defect_representation[j])
+            graph_ij = nx.Graph(structure_graph.graph)
+            for k, d in enumerate(defect_representation):
+                if d.specie.symbol == 'X' and k != i and k !=j :
+                    graph_ij.remove_node(find_site(full_structure, d))
+            path = nx.shortest_path(graph_ij, d_i, d_j)
+            for idx in path[1:-1]:
+                site_in_struct = full_structure[idx]
+                is_found, index = safe_find_site(defect_representation,
+                                                 site_in_struct)
+                if not is_found:
+                    sites.add(site_in_struct)
+    return list(sites)
+
+def make_subgraph(structure_graph, full_structure, defect_representation):
+    sites = get_sites_of_subgraph(structure_graph, full_structure, defect_representation)
+    struct = Structure.from_sites(sites)
+    subgraph = nx.Graph(make_graph(struct).graph)
+    idx = [find_site(struct, defect) for defect in defect_representation]
+
+    return nx.algorithms.approximation.steiner_tree(subgraph, idx)
 # plot structure
 
 # https://gist.github.com/lan496/3f60b6474750a6fd2b4237e820fbfea4
