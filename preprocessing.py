@@ -17,11 +17,22 @@ class Dataset:
     structure_graph = None
     
     def __init__(self, data):
-        self.data = data[['energy_per_atom', 
+        self.data = data[['formation_energy', 
                           'initial_structure', 
                           'defect_representation']].copy()
         
         s0 = data.iloc[0].initial_structure
+        d0 = self.data.iloc[0].defect_representation
+        
+        site_species = "S"
+        defect_site = d0[0]
+        insert_transf = InsertSitesTransformation([site_species],
+                                                  [defect_site.frac_coords])
+        self.full_structure = insert_transf.apply_transformation(s0)
+        
+        finder = SpacegroupAnalyzer(self.full_structure,
+                                    symprec=1e-1)
+        self.checker = finder.get_space_group_operations()
         
         self.layers_coords = layers_coords = build_layers_coords(s0)
 
@@ -55,23 +66,22 @@ class Dataset:
     
     def group_energy_argmin_idx(self, name):
         group_df = self.get_group_df(name)
-        return group_df.iloc[group_df.energy_per_atom.argmin()].idx
+        return group_df.index[group_df.formation_energy.argmin()]
     
     def subgroup_energy_argmin_idx(self, name):
         subgroup_df = self.get_subgroup_df(name)
-        return subgroup_df.iloc[subgroup_df.energy_per_atom.argmin()].idx
+        return subgroup_df.index[subgroup_df.formation_energy.argmin()]
+    
+    def energy_argmin_idx(self, name):
+        if name in correct_groups:
+            return self.group_energy_argmin_idx(name)
+        return self.subgroup_energy_argmin_idx(name)
         
     def get_full_structure(self):
         if self.full_structure is not None:
             return self.full_structure
         s0 = self.data.iloc[0].initial_structure
-        d0 = self.data.iloc[0].defect_representation
         
-        site_species = "S"
-        defect_site = d0[0]
-        insert_transf = InsertSitesTransformation([site_species],
-                                                  [defect_site.frac_coords])
-        self.full_structure = insert_transf.apply_transformation(s0)
         return self.full_structure
     
     def get_structure_graph(self):
